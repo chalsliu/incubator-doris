@@ -715,7 +715,7 @@ bool LinkedSchemaChange::process(ColumnData* olap_data, Rowset* new_rowset) {
 
     new_rowset->set_empty(olap_data->empty());
     new_rowset->set_num_segments(olap_data->olap_index()->num_segments());
-    new_rowset->add_column_statistics(olap_data->olap_index()->get_column_statistics());
+    new_rowset->add_column_statistics_for_linked_schema_change(olap_data->olap_index()->get_column_statistics());
 
     if (OLAP_SUCCESS != new_rowset->load()) {
         OLAP_LOG_WARNING("fail to reload index. [table='%s' version='%d-%d']",
@@ -1780,7 +1780,7 @@ OLAPStatus SchemaChangeHandler::schema_version_convert(
                                 dest_olap_table,
                                 rb_changer,
                                 memory_limitation * 1024 * 1024 * 1024);
-    } else if (true == sc_directly || src_olap_table->data_file_type() == OLAP_DATA_FILE) {
+    } else if (true == sc_directly) {
         OLAP_LOG_INFO("doing schema change directly.");
         sc_procedure = new(nothrow) SchemaChangeDirectly(
                                 dest_olap_table, rb_changer);
@@ -2000,8 +2000,7 @@ OLAPStatus SchemaChangeHandler::_alter_table(SchemaChangeParams* sc_params) {
                                sc_params->new_olap_table,
                                rb_changer,
                                memory_limitation * 1024 * 1024 * 1024);
-    } else if (true == sc_directly
-               || sc_params->ref_olap_table->data_file_type() == OLAP_DATA_FILE) {
+    } else if (true == sc_directly) {
         OLAP_LOG_INFO("doing schema change directly.");
         sc_procedure = new(nothrow) SchemaChangeDirectly(
                 sc_params->new_olap_table, rb_changer);

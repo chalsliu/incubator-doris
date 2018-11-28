@@ -15,30 +15,23 @@
 // specific language governing permissions and limitations
 // under the License.
 
-package org.apache.doris.metric;
+package org.apache.doris.load.routineload;
 
-import com.google.common.collect.Lists;
+import java.util.Map;
 
-import java.util.List;
-import java.util.stream.Collectors;
+/**
+ * this is description of kafka routine load progress
+ * the data before offset was already loaded in doris
+ */
+public class KafkaProgress {
 
-public class PaloMetricRegistry {
+    private Map<Integer, Long> partitionIdToOffset;
 
-    private List<PaloMetric> paloMetrics = Lists.newArrayList();
-
-    public PaloMetricRegistry() {
-
+    public Map<Integer, Long> getPartitionIdToOffset() {
+        return partitionIdToOffset;
     }
 
-    public synchronized void addPaloMetrics(PaloMetric paloMetric) {
-        paloMetrics.add(paloMetric);
-    }
-
-    public synchronized List<PaloMetric> getPaloMetrics() {
-        return Lists.newArrayList(paloMetrics);
-    }
-
-    public synchronized void removeMetrics(String name) {
-        paloMetrics = paloMetrics.stream().filter(m -> !(m.getName().equals(name))).collect(Collectors.toList());
+    public void setPartitionIdToOffset(Map<Integer, Long> partitionIdToOffset) {
+        this.partitionIdToOffset = partitionIdToOffset;
     }
 }

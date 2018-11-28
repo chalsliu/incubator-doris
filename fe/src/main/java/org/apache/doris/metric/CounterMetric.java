@@ -17,23 +17,14 @@
 
 package org.apache.doris.metric;
 
-import com.google.common.util.concurrent.AtomicDouble;
+/*
+ * Counter metric can only be increased
+ */
+public abstract class CounterMetric<T> extends Metric<T> {
 
-public class PaloDoubleCounterMetric extends PaloCounterMetric<Double> {
-
-    public PaloDoubleCounterMetric(String name, String description) {
-        super(name, description);
+    public CounterMetric(String name, String description) {
+        super(name, MetricType.COUNTER, description);
     }
 
-    private AtomicDouble value = new AtomicDouble(0.0);
-
-    @Override
-    public void increase(Double delta) {
-        value.addAndGet(delta);
-    }
-
-    @Override
-    public Double getValue() {
-        return value.get();
-    }
+    abstract public void increase(T delta);
 }

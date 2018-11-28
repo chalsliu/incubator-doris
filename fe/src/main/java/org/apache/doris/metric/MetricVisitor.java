@@ -17,14 +17,23 @@
 
 package org.apache.doris.metric;
 
-/*
- * Counter metric can only be increased
- */
-public abstract class PaloCounterMetric<T> extends PaloMetric<T> {
+import org.apache.doris.monitor.jvm.JvmStats;
 
-    public PaloCounterMetric(String name, String description) {
-        super(name, MetricType.COUNTER, description);
+import com.codahale.metrics.Histogram;
+
+public abstract class MetricVisitor {
+
+    protected String prefix;
+
+    public MetricVisitor(String prefix) {
+        this.prefix = prefix;
     }
 
-    abstract public void increase(T delta);
+    public abstract String visitJvm(JvmStats jvmStats);
+
+    public abstract String visit(Metric metric);
+
+    public abstract String visitHistogram(String name, Histogram histogram);
+
+    public abstract String getPaloNodeInfo();
 }

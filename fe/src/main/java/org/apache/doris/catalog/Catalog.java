@@ -135,7 +135,7 @@ import org.apache.doris.load.LoadChecker;
 import org.apache.doris.load.LoadErrorHub;
 import org.apache.doris.load.LoadJob;
 import org.apache.doris.load.LoadJob.JobState;
-import org.apache.doris.load.routineload.RoutineLoad;
+import org.apache.doris.load.routineload.RoutineLoadManager;
 import org.apache.doris.master.Checkpoint;
 import org.apache.doris.master.MetaHelper;
 import org.apache.doris.metric.MetricRepo;
@@ -241,7 +241,7 @@ public class Catalog {
     private ConcurrentHashMap<String, Cluster> nameToCluster;
 
     private Load load;
-    private RoutineLoad routineLoad;
+    private RoutineLoadManager routineLoadManager;
     private ExportMgr exportMgr;
     private Clone clone;
     private Alter alter;
@@ -279,8 +279,8 @@ public class Catalog {
     private int masterHttpPort;
     private String masterIp;
 
-    // For metadata persistence
-    private AtomicLong nextId = new AtomicLong(NEXT_ID_INIT_VALUE);
+    private CatalogIdGenerator idGenerator = new CatalogIdGenerator(NEXT_ID_INIT_VALUE);
+
     private String metaDir;
     private EditLog editLog;
     private int clusterId;
@@ -372,7 +372,7 @@ public class Catalog {
         this.idToDb = new ConcurrentHashMap<>();
         this.fullNameToDb = new ConcurrentHashMap<>();
         this.load = new Load();
-        this.routineLoad = new RoutineLoad();
+        this.routineLoadManager = new RoutineLoadManager();
         this.exportMgr = new ExportMgr();
         this.clone = new Clone();
         this.alter = new Alter();
@@ -565,6 +565,7 @@ public class Catalog {
         loadImage(IMAGE_DIR); // load image file
         editLog.open(); // open bdb env or local output stream
         this.globalTransactionMgr.setEditLog(editLog);
+        this.idGenerator.setEditLog(editLog);
 
         // 4. start load label cleaner thread
         createCleaner();
@@ -1281,7 +1282,7 @@ public class Catalog {
         newChecksum ^= replayedJournalId;
         long id = dis.readLong();
         newChecksum ^= id;
-        nextId.set(id);
+        idGenerator.setId(id);
 
         if (Catalog.getCurrentCatalogJournalVersion() >= FeMetaVersion.VERSION_32) {
             isDefaultClusterCreated = dis.readBoolean();
@@ -1685,7 +1686,7 @@ public class Catalog {
         dos.writeLong(replayedJournalId);
 
         // Write id
-        long id = nextId.getAndIncrement();
+        long id = idGenerator.getBatchEndId();
         checksum ^= id;
         dos.writeLong(id);
 
@@ -3096,10 +3097,10 @@ public class Catalog {
 
         // version and version hash
         if (versionInfo != null) {
-            partition.updateCommitVersionAndVersionHash(versionInfo.first, versionInfo.second);
+            partition.updateVisibleVersionAndVersionHash(versionInfo.first, versionInfo.second);
         }
-        long version = partition.getCommittedVersion();
-        long versionHash = partition.getCommittedVersionHash();
+        long version = partition.getVisibleVersion();
+        long versionHash = partition.getVisibleVersionHash();
 
         for (Map.Entry<Long, MaterializedIndex> entry : indexMap.entrySet()) {
             long indexId = entry.getKey();
@@ -3639,7 +3640,7 @@ public class Catalog {
                     Preconditions.checkState(partitionId.size() == 1);
                     partition = olapTable.getPartition(partitionId.get(0));
                 }
-                sb.append(Joiner.on(",").join(partition.getCommittedVersion(), partition.getCommittedVersionHash()))
+                sb.append(Joiner.on(",").join(partition.getVisibleVersion(), partition.getVisibleVersionHash()))
                         .append("\"");
             }
 
@@ -3758,7 +3759,7 @@ public class Catalog {
                 sb.append(entry.getValue().upperEndpoint().toSql());
 
                 sb.append("(\"version_info\" = \"");
-                sb.append(Joiner.on(",").join(partition.getCommittedVersion(), partition.getCommittedVersionHash()))
+                sb.append(Joiner.on(",").join(partition.getVisibleVersion(), partition.getVisibleVersionHash()))
                         .append("\"");
                 if (replicationNum > 0) {
                     sb.append(", \"replication_num\" = \"").append(replicationNum).append("\"");
@@ -4093,8 +4094,7 @@ public class Catalog {
 
     // Get the next available, need't lock because of nextId is atomic.
     public long getNextId() {
-        long id = nextId.getAndIncrement();
-        editLog.logSaveNextId(id);
+        long id = idGenerator.getNextId();
         return id;
     }
 
@@ -4250,8 +4250,8 @@ public class Catalog {
         return this.load;
     }
 
-    public RoutineLoad getRoutineLoadInstance() {
-        return routineLoad;
+    public RoutineLoadManager getRoutineLoadInstance() {
+        return routineLoadManager;
     }
 
     public ExportMgr getExportMgr() {
@@ -4371,9 +4371,7 @@ public class Catalog {
     }
 
     public void setNextId(long id) {
-        if (nextId.get() < id) {
-            nextId.set(id);
-        }
+        idGenerator.setId(id);
     }
 
     public void setHaProtocol(HAProtocol protocol) {

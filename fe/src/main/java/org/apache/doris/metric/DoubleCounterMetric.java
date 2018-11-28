@@ -15,10 +15,25 @@
 // specific language governing permissions and limitations
 // under the License.
 
-package org.apache.doris.load.routineload;
+package org.apache.doris.metric;
 
-public class KafkaRoutineLoadProgress {
+import com.google.common.util.concurrent.AtomicDouble;
 
-    private String partitionName;
-    private long offset;
+public class DoubleCounterMetric extends CounterMetric<Double> {
+
+    public DoubleCounterMetric(String name, String description) {
+        super(name, description);
+    }
+
+    private AtomicDouble value = new AtomicDouble(0.0);
+
+    @Override
+    public void increase(Double delta) {
+        value.addAndGet(delta);
+    }
+
+    @Override
+    public Double getValue() {
+        return value.get();
+    }
 }

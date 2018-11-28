@@ -15,28 +15,25 @@
 // specific language governing permissions and limitations
 // under the License.
 
-package org.apache.doris.common;
+package org.apache.doris.metric;
 
-import com.google.common.base.Strings;
+import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * Thrown for internal server errors.
- */
-public class UserException extends Exception {
-    public UserException(String msg, Throwable cause) {
-        super(Strings.nullToEmpty(msg), cause);
+public class LongCounterMetric extends CounterMetric<Long> {
+
+    public LongCounterMetric(String name, String description) {
+        super(name, description);
     }
 
-    public UserException(Throwable cause) {
-        super(cause);
+    private AtomicLong value = new AtomicLong(0L);
+
+    @Override
+    public void increase(Long delta) {
+        value.addAndGet(delta);
     }
 
-    public UserException(String msg, Throwable cause, boolean enableSuppression, boolean writableStackTrace) {
-        super(Strings.nullToEmpty(msg), cause, enableSuppression, writableStackTrace);
+    @Override
+    public Long getValue() {
+        return value.get();
     }
-
-    public UserException(String msg) {
-        super(Strings.nullToEmpty(msg));
-    }
-
 }

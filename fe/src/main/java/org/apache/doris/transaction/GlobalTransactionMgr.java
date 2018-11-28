@@ -83,9 +83,10 @@ public class GlobalTransactionMgr {
 
     // transactionId -> TransactionState
     private Map<Long, TransactionState> idToTransactionState;
+    // db id -> (label -> txn id)
     private com.google.common.collect.Table<Long, String, Long> dbIdToTxnLabels; 
     private Map<Long, Integer> runningTxnNums;
-    private TransactionIDGenerator idGenerator;
+    private TransactionIdGenerator idGenerator;
     
     private Catalog catalog;
     
@@ -94,21 +95,21 @@ public class GlobalTransactionMgr {
         dbIdToTxnLabels = HashBasedTable.create();  
         runningTxnNums = Maps.newHashMap();
         this.catalog = catalog;
-        this.idGenerator = new TransactionIDGenerator();
+        this.idGenerator = new TransactionIdGenerator();
     }
 
     /**
-     * the app could specify the transactionid and
+     * the app could specify the transaction id
      *
      * @param coordinator
-     * @throws BeginTransactionException 
+     * @throws BeginTransactionException
      * @throws IllegalTransactionParameterException
      */
     public long beginTransaction(long dbId, String label, String coordinator, LoadJobSourceType sourceType)
             throws AnalysisException, LabelAlreadyExistsException, BeginTransactionException {
 
         if (Config.disable_load_job) {
-            throw new BeginTransactionException("disable_load_job is set to true, all load job is prevented");
+            throw new BeginTransactionException("disable_load_job is set to true, all load jobs are prevented");
         }
         
         writeLock();
@@ -184,16 +185,17 @@ public class GlobalTransactionMgr {
      * @note it is necessary to optimize the `lock` mechanism and `lock` scope resulting from wait lock long time
      * @note callers should get db.write lock before call this api
      */
-    public void commitTransaction(long dbId, long transactionId, List<TabletCommitInfo> tabletCommitInfos) throws MetaNotFoundException, TransactionCommitFailedException {
-        
+    public void commitTransaction(long dbId, long transactionId, List<TabletCommitInfo> tabletCommitInfos)
+            throws MetaNotFoundException, TransactionCommitFailedException {
         if (Config.disable_load_job) {
-            throw new TransactionCommitFailedException("disable_load_job is set to true, all load job is prevented");
+            throw new TransactionCommitFailedException("disable_load_job is set to true, all load jobs are prevented");
         }
         
-        LOG.debug("try to commit transaction:[{}]", transactionId);
+        LOG.debug("try to commit transaction: {}", transactionId);
         if (tabletCommitInfos == null || tabletCommitInfos.isEmpty()) {
             throw new TransactionCommitFailedException("all partitions have no load data");
         }
+
         // 1. check status
         // the caller method already own db lock, we not obtain db lock here
         Database db = catalog.getDb(dbId);
@@ -259,7 +261,8 @@ public class GlobalTransactionMgr {
                 }
                 // the rolling up index should also be taken care
                 // if the rollup index failed during load, then set its last failed version
-                // if rollup task finished, it should compare version and last failed version, if version < last failed version, then the replica is failed
+                // if rollup task finished, it should compare version and last failed version,
+                // if version < last failed version, then the replica is failed
                 if (rollingUpIndex != null) {
                     allIndices.add(rollingUpIndex);
                 }
@@ -286,11 +289,12 @@ public class GlobalTransactionMgr {
                                 // ignore it but not log it
                                 // for example, a replica is in clone state
                                 if (replica.getLastFailedVersion() < 0) {
-                                    ++ successReplicaNum;
+                                    ++successReplicaNum;
                                 } else {
                                     // if this error replica is a base replica and it is under rollup
                                     // then remove the rollup task and rollup job will remove the rollup replica automatically
-                                    // should remove here, because the error replicas not contains this base replica, but it have errors in the past
+                                    // should remove here, because the error replicas not contains this base replica,
+                                    // but it has errors in the past
                                     if (index.getId() == baseIndex.getId() && rollupJob != null) {
                                         LOG.info("the base replica [{}] has error, remove the related rollup replica from rollupjob [{}]", 
                                                 replica, rollupJob);
@@ -339,12 +343,16 @@ public class GlobalTransactionMgr {
             }
             // 5. persistent transactionState
             unprotectUpsertTransactionState(transactionState);
+
+            // add publish version tasks. set task to null as a placeholder.
+            // tasks will be created when publishing version.
             for (long backendId : totalInvolvedBackends) {
                 transactionState.addPublishVersionTask(backendId, null);
             }
         } finally {
             writeUnlock();
         }
+
         // 6. update nextVersion because of the failure of persistent transaction resulting in error version
         updateCatalogAfterCommitted(transactionState, db);
         LOG.info("transaction:[{}] successfully committed", transactionState);
@@ -384,7 +392,6 @@ public class GlobalTransactionMgr {
     }
     
     public void abortTransaction(long transactionId, String reason) throws UserException {
-
         if (transactionId < 0) {
             LOG.info("transaction id is {}, less than 0, maybe this is an old type load job, ignore abort operation", transactionId);
             return;
@@ -419,6 +426,10 @@ public class GlobalTransactionMgr {
         }
     }
 
+    /*
+     * get all txns which is ready to publish
+     * a ready-to-publish txn's partition's visible version should be ONE less than txn's commit version.
+     */
     public List<TransactionState> getReadyToPublishTransactions() {
         List<TransactionState> readyPublishTransactionState = new ArrayList<>();
         List<TransactionState> allCommittedTransactionState = null;
@@ -440,6 +451,7 @@ public class GlobalTransactionMgr {
         } finally {
             writeUnlock();
         }
+
         for (TransactionState transactionState : allCommittedTransactionState) {
             boolean meetPublishPredicate = true;
             long dbId = transactionState.getDbId();
@@ -448,35 +460,40 @@ public class GlobalTransactionMgr {
                 continue;
             }
             db.readLock();
-            writeLock();
             try {
-                for (TableCommitInfo tableCommitInfo : transactionState.getIdToTableCommitInfos().values()) {
-                    OlapTable table = (OlapTable) db.getTable(tableCommitInfo.getTableId());
-                    if (null == table) {
-                        LOG.warn("table {} is dropped after commit, ignore this table", tableCommitInfo.getTableId());
-                        continue;
-                    }
-                    for (PartitionCommitInfo partitionCommitInfo : tableCommitInfo.getIdToPartitionCommitInfo().values()) {
-                        Partition partition = table.getPartition(partitionCommitInfo.getPartitionId());
-                        if (null == partition) {
-                            LOG.warn("partition {} is dropped after commit, ignore this partition", partitionCommitInfo.getPartitionId());
+                readLock();
+                try {
+                    for (TableCommitInfo tableCommitInfo : transactionState.getIdToTableCommitInfos().values()) {
+                        OlapTable table = (OlapTable) db.getTable(tableCommitInfo.getTableId());
+                        if (null == table) {
+                            LOG.warn("table {} is dropped after commit, ignore this table",
+                                     tableCommitInfo.getTableId());
                             continue;
                         }
-                        if (partitionCommitInfo.getVersion() != partition.getCommittedVersion() + 1) {
-                            meetPublishPredicate = false;
+                        for (PartitionCommitInfo partitionCommitInfo : tableCommitInfo.getIdToPartitionCommitInfo().values()) {
+                            Partition partition = table.getPartition(partitionCommitInfo.getPartitionId());
+                            if (null == partition) {
+                                LOG.warn("partition {} is dropped after commit, ignore this partition",
+                                         partitionCommitInfo.getPartitionId());
+                                continue;
+                            }
+                            if (partitionCommitInfo.getVersion() != partition.getVisibleVersion() + 1) {
+                                meetPublishPredicate = false;
+                                break;
+                            }
+                        }
+                        if (!meetPublishPredicate) {
                             break;
                         }
                     }
-                    if (!meetPublishPredicate) {
-                        break;
+                    if (meetPublishPredicate) {
+                        LOG.debug("transaction [{}] is ready to publish", transactionState);
+                        readyPublishTransactionState.add(transactionState);
                     }
-                }
-                if (meetPublishPredicate) {
-                    LOG.debug("transaction [{}] is ready to publish", transactionState);
-                    readyPublishTransactionState.add(transactionState);
+                } finally {
+                    readUnlock();
                 }
             } finally {
-                writeUnlock();
                 db.readUnlock();
             }
         }
@@ -485,7 +502,6 @@ public class GlobalTransactionMgr {
 
     /**
      * if the table is deleted between commit and publish version, then should ignore the partition
-     * if a tablet is not find in
      *
      * @param transactionId
      * @param errorReplicaIds
@@ -558,27 +574,38 @@ public class GlobalTransactionMgr {
                         for (Tablet tablet : index.getTablets()) {
                             int healthReplicaNum = 0;
                             for (Replica replica : tablet.getReplicas()) {
-                                // this means the replica is a healthy replica, it is health in the past and does not have error in current load
                                 if (!errorReplicaIds.contains(replica.getId()) 
                                         && replica.getLastFailedVersion() < 0) {
-                                    if (replica.getVersion() == partition.getCommittedVersion() && replica.getVersionHash() == partition.getCommittedVersionHash()
-                                            || replica.getVersion() >= partitionCommitInfo.getVersion()) {
-                                            // during rollup the rollup replica's last failed version < 0, it maybe treated as a normal replica
-                                            // the replica is not failed during commit or publish
-                                            // during upgrade, one replica's last version maybe invalid, has to compare version hash
-                                            // if a,b,c commit 10 transactions, and then b,c crashed, we add new b',c' it has to recover, we improve a's version one by one and b' c' will recover
-                                            // from a one by one
-                                            replica.updateInfo(partitionCommitInfo.getVersion(), partitionCommitInfo.getVersionHash(), 
-                                                    replica.getDataSize(), replica.getRowCount());
-                                            ++ healthReplicaNum;
+                                    // this means the replica is a healthy replica,
+                                    // it is healthy in the past and does not have error in current load
+
+                                    if (replica.checkVersionCatchUp(partition.getVisibleVersion(),
+                                                                    partition.getVisibleVersionHash())) {
+                                        // during rollup, the rollup replica's last failed version < 0,
+                                        // it may be treated as a normal replica.
+                                        // the replica is not failed during commit or publish
+                                        // during upgrade, one replica's last version maybe invalid,
+                                        // has to compare version hash.
+
+                                        // Here we still update the replica's info even if we failed to publish
+                                        // this txn, for the following case:
+                                        // replica A,B,C is successfully committed, but only A is successfully
+                                        // published,
+                                        // B and C is crashed, now we need a Clone task to repair this tablet.
+                                        // So, here we update A's version info, so that clone task will clone
+                                        // the latest version of data.
+                                        replica.updateVersionInfo(partitionCommitInfo.getVersion(),
+                                                                  partitionCommitInfo.getVersionHash(),
+                                                                  replica.getDataSize(), replica.getRowCount());
+                                        ++healthReplicaNum;
                                     } else {
                                         // this means the replica has error in the past, but we did not observe it
                                         // during upgrade, one job maybe in quorum finished state, for example, A,B,C 3 replica
-                                        // A,B 's verison is 10, C's version is 10 but C' 10 is abnormal should be rollback
+                                        // A,B 's version is 10, C's version is 10 but C' 10 is abnormal should be rollback
                                         // then we will detect this and set C's last failed version to 10 and last success version to 11
                                         // this logic has to be replayed in checkpoint thread
                                         replica.updateVersionInfo(replica.getVersion(), replica.getVersionHash(), 
-                                                partition.getCommittedVersion(), partition.getCommittedVersionHash(), 
+                                                partition.getVisibleVersion(), partition.getVisibleVersionHash(), 
                                                 partitionCommitInfo.getVersion(), partitionCommitInfo.getVersionHash());
                                         LOG.warn("transaction state {} has error, the replica [{}] not appeared in error replica list " 
                                                 + " and its version not equal to partition commit version or commit version - 1" 
@@ -586,10 +613,10 @@ public class GlobalTransactionMgr {
                                     }
                                 } else if (replica.getVersion() == partitionCommitInfo.getVersion()
                                         && replica.getVersionHash() == partitionCommitInfo.getVersionHash()) {
-                                    // the replica's version and versionhash is equal to current transaction partition's version and version hash
+                                    // the replica's version and version hash is equal to current transaction partition's version and version hash
                                     // the replica is normal, then remove it from error replica ids
                                     errorReplicaIds.remove(replica.getId());
-                                    ++ healthReplicaNum;
+                                    ++healthReplicaNum;
                                 }
                                 if (replica.getLastFailedVersion() > 0) {
                                     // if this error replica is a base replica and it is under rollup
@@ -876,12 +903,14 @@ public class GlobalTransactionMgr {
                     }
                 }
                 partition.setNextVersion(partition.getNextVersion() + 1);
-                // the partition's current version hash should be set from partition commit info
-                // for example, fe master's partition current version hash is 123123, fe followers partition current version hash is 3333
-                // they are different, fe master changed, the follower is master now, but its current version hash is 333, if clone happened,
-                // clone finished but its finished version hash != partition's current version hash, then clone is failed
-                // because clone depend on partition's current version to clone
-                partition.setNextVersionHash(Util.generateVersionHash(), partitionCommitInfo.getVersionHash());
+                // Although committed version(hash) is not visible to user,
+                // but they need to be synchronized among Frontends.
+                // because we use committed version(hash) to create clone task, if the first Master FE
+                // send clone task with committed version hash X, and than Master changed, the new Master FE
+                // received the clone task report with version hash X, which not equals to it own committed
+                // version hash, than the clone task is failed.
+                partition.setNextVersionHash(Util.generateVersionHash() /* next version hash */,
+                                             partitionCommitInfo.getVersionHash() /* committed version hash*/);
             }
         }
     }
@@ -903,12 +932,12 @@ public class GlobalTransactionMgr {
                     rollupJob = (RollupJob) catalog.getRollupHandler().getAlterJob(tableId);
                     rollingUpIndex = rollupJob.getRollupIndex(partitionId);
                 }
-                List<MaterializedIndex> allInices = new ArrayList<>();
-                allInices.addAll(partition.getMaterializedIndices());
+                List<MaterializedIndex> allIndices = new ArrayList<>();
+                allIndices.addAll(partition.getMaterializedIndices());
                 if (rollingUpIndex != null) {
-                    allInices.add(rollingUpIndex);
+                    allIndices.add(rollingUpIndex);
                 }
-                for (MaterializedIndex index : allInices) {
+                for (MaterializedIndex index : allIndices) {
                     for (Tablet tablet : index.getTablets()) {
                         for (Replica replica : tablet.getReplicas()) {
                             long lastFailedVersion = replica.getLastFailedVersion();
@@ -919,30 +948,22 @@ public class GlobalTransactionMgr {
                             long lastSuccessVersionHash = replica.getLastSuccessVersionHash();
                             if (!errorReplicaIds.contains(replica.getId())) {
                                 if (replica.getLastFailedVersion() > 0) {
-                                    // if the replica is a failed replica, then not change version and version hash
+                                    // if the replica is a failed replica, then not changing version and version hash
                                     newVersion = replica.getVersion();
                                     newVersionHash = replica.getVersionHash();
-                                } else {
-                                    if (replica.getVersion() == partition.getCommittedVersion() && replica.getVersionHash() == partition.getCommittedVersionHash()
-                                            || replica.getVersion() >= partitionCommitInfo.getVersion()) {
-                                            // during rollup the rollup replica's last failed version < 0, it maybe treated as a normal replica
-                                            // the replica is not failed during commit or publish
-                                            // during upgrade, one replica's last version maybe invalid, has to compare version hash
-                                            // if a,b,c commit 10 transactions, and then b,c crashed, we add new b',c' it has to recover, we improve a's version one by one and b' c' will recover
-                                            // from a one by one
-                                        // DO NOTHING
-                                    } else {
-                                        // this means the replica has error in the past, but we did not observe it
-                                        // during upgrade, one job maybe in quorum finished state, for example, A,B,C 3 replica
-                                        // A,B 's version is 10, C's version is 10 but C' 10 is abnormal should be rollback
-                                        // then we will detect this and set C's last failed version to 10 and last success version to 11
-                                        // this logic has to be replayed in checkpoint thread
-                                        lastFailedVersion = partition.getCommittedVersion();
-                                        lastFailedVersionHash = partition.getCommittedVersionHash();
-                                        newVersion = replica.getVersion();
-                                        newVersionHash = replica.getVersionHash();
-                                    }
+                                } else if (!replica.checkVersionCatchUp(partition.getVisibleVersion(),
+                                                                        partition.getVisibleVersionHash())) {
+                                    // this means the replica has error in the past, but we did not observe it
+                                    // during upgrade, one job maybe in quorum finished state, for example, A,B,C 3 replica
+                                    // A,B 's version is 10, C's version is 10 but C' 10 is abnormal should be rollback
+                                    // then we will detect this and set C's last failed version to 10 and last success version to 11
+                                    // this logic has to be replayed in checkpoint thread
+                                    lastFailedVersion = partition.getVisibleVersion();
+                                    lastFailedVersionHash = partition.getVisibleVersionHash();
+                                    newVersion = replica.getVersion();
+                                    newVersionHash = replica.getVersionHash();
                                 }
+
                                 // success version always move forward
                                 lastSucessVersion = newCommitVersion;
                                 lastSuccessVersionHash = newCommitVersionHash;
@@ -971,10 +992,10 @@ public class GlobalTransactionMgr {
                             }
                         }
                     }
-                }
+                } // end for indices
                 long version = partitionCommitInfo.getVersion();
                 long versionHash = partitionCommitInfo.getVersionHash();
-                partition.updateCommitVersionAndVersionHash(version, versionHash);
+                partition.updateVisibleVersionAndVersionHash(version, versionHash);
                 if (LOG.isDebugEnabled()) {
                     LOG.debug("transaction state {} set partition's version to [{}] and version hash to [{}]", 
                             transactionState, version, versionHash);
@@ -1002,14 +1023,14 @@ public class GlobalTransactionMgr {
         if (preStatus == null 
                 && (curTxnState.getTransactionStatus() == TransactionStatus.PREPARE
                     || curTxnState.getTransactionStatus() == TransactionStatus.COMMITTED)) {
-            ++ dbRunningTxnNum;
+            ++dbRunningTxnNum;
             runningTxnNums.put(curTxnState.getDbId(), dbRunningTxnNum);
         } else if (preStatus != null
                 && (preStatus == TransactionStatus.PREPARE
                     || preStatus == TransactionStatus.COMMITTED)
                 && (curTxnState.getTransactionStatus() == TransactionStatus.VISIBLE
                     || curTxnState.getTransactionStatus() == TransactionStatus.ABORTED)) {
-            -- dbRunningTxnNum;
+            --dbRunningTxnNum;
             if (dbRunningTxnNum < 1) {
                 runningTxnNums.remove(curTxnState.getDbId());
             } else {
@@ -1145,7 +1166,7 @@ public class GlobalTransactionMgr {
         return this.idToTransactionState.size();
     }
     
-    public TransactionIDGenerator getTransactionIDGenerator() {
+    public TransactionIdGenerator getTransactionIDGenerator() {
         return this.idGenerator;
     }
     

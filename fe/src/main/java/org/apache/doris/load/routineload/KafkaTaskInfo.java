@@ -15,14 +15,35 @@
 // specific language governing permissions and limitations
 // under the License.
 
-package org.apache.doris.metric;
+package org.apache.doris.load.routineload;
 
-/*
- * Gauge metric is updated every time it is visited
- */
-public abstract class PaloGaugeMetric<T> extends PaloMetric<T> {
+import org.apache.doris.common.SystemIdGenerator;
 
-    public PaloGaugeMetric(String name, String description) {
-        super(name, MetricType.GAUGE, description);
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+public class KafkaTaskInfo extends RoutineLoadTaskInfo {
+
+    private List<Integer> partitions;
+
+    public KafkaTaskInfo(String id, String jobId) {
+        super(id, jobId);
+        this.partitions = new ArrayList<>();
     }
+
+    public KafkaTaskInfo(KafkaTaskInfo kafkaTaskInfo) {
+        super(UUID.randomUUID().toString(), kafkaTaskInfo.getJobId());
+        this.partitions = kafkaTaskInfo.getPartitions();
+    }
+
+    public void addKafkaPartition(int partition) {
+        partitions.add(partition);
+    }
+
+    public List<Integer> getPartitions() {
+        return partitions;
+    }
+
+
 }
